@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>User Experience Tracking</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      margin: 0;
+      padding: 0;
+    }
+    video {
+      width: 100%;
+      max-width: 600px;
+      height: auto;
+      margin-top: 20px;
+      display: none;
+      pointer-events: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+    }
+    video::-webkit-media-controls {
+      display: none !important;
+    }
+    video::-webkit-media-controls-enclosure {
+      display: none !important;
+    }
+    video::-webkit-media-controls-panel {
+      display: none !important;
+    }
+    video::-webkit-media-controls-overlay-play-button {
+      display: none !important;
+    }
+    video::-webkit-media-controls-play-button {
+      display: none !important;
+    }
+    video::-webkit-media-controls-timeline {
+      display: none !important;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      cursor: pointer;
+      border-radius: 5px;
+      margin: 10px;
+    }
+    #buttonContainer {
+      margin: 20px 0;
+    }
+    #popup, #cameraPermissionPopup, #completionCodePopup {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background-color: white;
+      border: 2px solid #4CAF50;
+      padding: 20px;
+      z-index: 1000;
+      text-align: center;
+    }
+    #completionCode {
+      font-size: 24px;
+      font-weight: bold;
+      margin: 20px 0;
+      padding: 10px;
+      background-color: #f0f0f0;
+      border-radius: 5px;
+    }
+    #overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      z-index: 999;
+    }
+    .copy-button {
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 5px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    .copy-button:hover {
+      background-color: #45a049;
+    }
+    .instruction {
+      margin-top: 15px;
+      color: #666;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <h1>User Experience Tracking</h1>
+
+  <div id="buttonContainer">
+    <button id="watchBtn" style="display: none;">Step 2: Watch Video</button>
+  </div>
+
+  <div id="videoContainer">
+    <video id="videoPlayer" preload="auto">
+      <source src="https://x-ad-assets.s3.amazonaws.com/media_asset/cba172b92202f25f/media" type="video/mp4">
+      Your browser does not support the video tag.
+    </video>
+  </div>
+
+  <div id="overlay"></div>
+
+  <!-- Popup for Camera Permission -->
+  <div id="cameraPermissionPopup">
+    <h2>Step 1: Allow Camera Access</h2>
+    <p>This experience requires access to your camera to track your emotions while watching the video.</p>
+    <p><a href="https://yaronskihoma.github.io/VideoTask2/privacypolicy.html" target="_blank">Read our Privacy Policy</a></p>
+    <button id="allowCameraBtn">Allow Camera</button>
+  </div>
+
+  <!-- Completion Code Popup -->
+  <div id="completionCodePopup">
+    <h2>Thank you for participating!</h2>
+    <p>Your completion code is:</p>
+    <div id="completionCode"></div>
+    <button class="copy-button" onclick="copyToClipboard()">Copy Code</button>
+    <p class="instruction">Please copy this code and paste it in your Amazon MTurk task to complete the HIT.</p>
+  </div>
+<!-- Scripts -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://sdk.morphcast.com/mphtools/v1.1/mphtools.js" data-config="cameraPrivacyPopup, compatibilityUI, compatibilityAutoCheck"></script>
+  <script src="https://ai-sdk.morphcast.com/v1.16/ai-sdk.js"></script>
+  <script src="https://sdk.morphcast.com/emotion-statistics/v1.0-beta/script.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
+  <script type="module">
+    import config from './config.js';
+    
+    const { createClient } = supabase;
+    const supabaseClient = createClient(
+      config.SUPABASE_URL,
+      config.SUPABASE_KEY
+    );
+
+    let trackingData = [];
+    let morphcastInstance = null;
+    const watchBtn = document.getElementById('watchBtn');
+    const videoPlayer = document.getElementById('videoPlayer');
+    const overlay = document.getElementById('overlay');
+    const cameraPermissionPopup = document.getElementById('cameraPermissionPopup');
+    const allowCameraBtn = document.getElementById('allowCameraBtn');
+    const completionCodePopup = document.getElementById('completionCodePopup');
+
+    // Disable video controls
+    videoPlayer.controls = false;
+
+    // Prevent seeking function
+    function preventSeeking(event) {
+      if (event.target.seeking) {
+        event.target.currentTime = event.target.savedTime || 0;
+      }
+    }
+
+    // Handle fullscreen changes
+    function handleFullscreenChange() {
+      if (!document.fullscreenElement && 
+          !document.webkitFullscreenElement && 
+          !document.mozFullScreenElement && 
+          !document.msFullscreenElement) {
+        // If video is still playing, force back to fullscreen
+        if (!videoPlayer.paused && !videoPlayer.ended) {
+          if (videoPlayer.requestFullscreen) {
+            videoPlayer.requestFullscreen();
+          } else if (videoPlayer.webkitRequestFullscreen) {
+            videoPlayer.webkitRequestFullscreen();
+          } else if (videoPlayer.msRequestFullscreen) {
+            videoPlayer.msRequestFullscreen();
+          }
+        }
+      }
+    }
+
+    // Save current time periodically
+    setInterval(() => {
+      if (!videoPlayer.seeking) {
+        videoPlayer.savedTime = videoPlayer.currentTime;
+      }
+    }, 250);
+
+    // Prevent keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' || 
+          e.code === 'ArrowLeft' || 
+          e.code === 'ArrowRight' || 
+          e.code === 'Escape') {
+        e.preventDefault();
+      }
+    });
+
+    window.copyToClipboard = function() {
+      const codeElement = document.getElementById('completionCode');
+      const text = codeElement.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const button = document.querySelector('.copy-button');
+        button.textContent = 'Copied!';
+        setTimeout(() => {
+          button.textContent = 'Copy Code';
+        }, 2000);
+      });
+    };
+
+    function showCompletionCode() {
+      const codeElement = document.getElementById('completionCode');
+      codeElement.textContent = config.COMPLETION_CODE;
+      overlay.style.display = 'block';
+      completionCodePopup.style.display = 'block';
+    }
+
+    async function uploadWithRetry(data, filename, maxRetries = 3) {
+      for (let i = 0; i < maxRetries; i++) {
+        try {
+          return await uploadToSupabase(data, filename);
+        } catch (error) {
+          if (i === maxRetries - 1) throw error;
+          await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+        }
+      }
+    }
+
+    function getMTurkWorkerId() {
+      const urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get('workerId') || 'unknown_worker';
+    }
+
+    window.addEventListener('load', () => {
+      overlay.style.display = 'block';
+      cameraPermissionPopup.style.display = 'block';
+    });
+
+    function requestCameraAccess() {
+      navigator.mediaDevices.getUserMedia({ video: true })
+        .then(() => {
+          cameraPermissionPopup.style.display = 'none';
+          overlay.style.display = 'none';
+          watchBtn.style.display = 'inline-block';
+        })
+        .catch(() => {
+          alert('Camera access denied. You cannot proceed without allowing camera access.');
+        });
+    }
+
+    allowCameraBtn.addEventListener('click', requestCameraAccess);
+
+    async function uploadToSupabase(data, filename) {
+      try {
+        if (data.size > 5 * 1024 * 1024) {
+          throw new Error('File too large');
+        }
+
+        const { data: uploadData, error } = await supabaseClient.storage
+          .from('AROSUALDATA')
+          .upload(filename, data, {
+            cacheControl: '3600',
+            contentType: data instanceof Blob ? data.type : 'application/json',
+            upsert: true
+          });
+
+        if (error) throw error;
+        return uploadData;
+      } catch (error) {
+        console.error('Supabase upload error:', error);
+        throw error;
+      }
+    }
+
+    async function generateAndUploadData() {
+      const loadingOverlay = document.createElement('div');
+      loadingOverlay.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0,0,0,0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+      `;
+      
+      const message = document.createElement('div');
+      message.style.cssText = `
+        background: white;
+        padding: 20px;
+        border-radius: 5px;
+        text-align: center;
+      `;
+      message.textContent = 'Uploading data...';
+      
+      loadingOverlay.appendChild(message);
+      document.body.appendChild(loadingOverlay);
+
+      try {
+        const sessionId = Date.now();
+        const workerId = getMTurkWorkerId();
+        
+        const metadata = {
+          sessionId: sessionId,
+          workerId: workerId,
+          taskId: config.TASK_ID,
+          totalFrames: trackingData.length
+        };
+
+        const jsonBlob = new Blob([JSON.stringify(trackingData)], { type: 'application/json' });
+        const metadataBlob = new Blob([JSON.stringify(metadata)], { type: 'application/json' });
+
+        await Promise.all([
+          uploadWithRetry(jsonBlob, `${config.TASK_ID}_${workerId}_data_${sessionId}.json`),
+          uploadWithRetry(metadataBlob, `${config.TASK_ID}_${workerId}_metadata_${sessionId}.json`)
+        ]);
+
+        document.body.removeChild(loadingOverlay);
+        showCompletionCode();
+
+      } catch (error) {
+        console.error('Upload error:', error);
+        message.textContent = 'Error uploading data. Please try again or contact the researcher.';
+        setTimeout(() => {
+          if (document.body.contains(loadingOverlay)) {
+            document.body.removeChild(loadingOverlay);
+          }
+        }, 3000);
+      }
+    }
+
+    CY.loader()
+      .licenseKey(config.MORPHCAST_LICENSE)
+      .addModule(CY.modules().FACE_AROUSAL_VALENCE.name, { smoothness: 0.70 })
+      .addModule(CY.modules().FACE_EMOTION.name, { smoothness: 0.40 })
+      .addModule(CY.modules().FACE_ATTENTION.name, { smoothness: 0.83 })
+      .addModule(CY.modules().FACE_DETECTOR.name, { maxInputFrameSize: 320, smoothness: 0.83 })
+      .addModule(CY.modules().ALARM_NO_FACE.name, { timeWindowMs: 10000, initialToleranceMs: 7000, threshold: 0.75 })
+      .addModule(CY.modules().DATA_AGGREGATOR.name, { initialWaitMs: 2000, periodMs: 1000 })
+      .load()
+      .then(({ start, stop }) => {
+        morphcastInstance = { start, stop };
+      });
+
+    // Event Listeners for tracking data
+    window.addEventListener(CY.modules().FACE_AROUSAL_VALENCE.eventName, (evt) => {
+      trackingData.push({
+        mediaTime: videoPlayer.currentTime,
+        type: 'FACE_AROUSAL_VALENCE',
+        valence: evt.detail.output.valence,
+        arousal: evt.detail.output.arousal
+      });
+    });
+
+    window.addEventListener(CY.modules().FACE_EMOTION.eventName, (evt) => {
+      trackingData.push({
+        mediaTime: videoPlayer.currentTime,
+        type: 'FACE_EMOTION',
+        dominantEmotion: evt.detail.output.dominantEmotion,
+        emotions: evt.detail.output.emotion
+      });
+    });
+
+    window.addEventListener(CY.modules().FACE_ATTENTION.eventName, (evt) => {
+      trackingData.push({
+        mediaTime: videoPlayer.currentTime,
+        type: 'FACE_ATTENTION',
+        attention: evt.detail.output.attention
+      });
+    });
+
+    window.addEventListener(CY.modules().FACE_DETECTOR.eventName, (evt) => {
+      trackingData.push({
+        mediaTime: videoPlayer.currentTime,
+        type: 'FACE_DETECTOR',
+        totalFaces: evt.detail.totalFaces,
+        status: evt.detail.status
+      });
+    });
+
+    watchBtn.addEventListener('click', async () => {
+      videoPlayer.style.display = 'block';
+      if (morphcastInstance) {
+        await morphcastInstance.start();
+      }
+
+      // Add seeking prevention
+      videoPlayer.addEventListener('seeking', preventSeeking);
+      
+      // Add fullscreen handling
+      document.addEventListener("fullscreenchange", handleFullscreenChange);
+      document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+      document.addEventListener("mozfullscreenchange", handleFullscreenChange);
+      document.addEventListener("MSFullscreenChange", handleFullscreenChange);
+
+      // Force fullscreen
+      if (videoPlayer.requestFullscreen) {
+        videoPlayer.requestFullscreen();
+      } else if (videoPlayer.webkitRequestFullscreen) {
+        videoPlayer.webkitRequestFullscreen();
+      } else if (videoPlayer.msRequestFullscreen) {
+        videoPlayer.msRequestFullscreen();
+      }
+
+      videoPlayer.play();
+    });
+
+    videoPlayer.onended = async () => {
+      // Remove event listeners
+      videoPlayer.removeEventListener('seeking', preventSeeking);
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+      document.removeEventListener("mozfullscreenchange", handleFullscreenChange);
+      document.removeEventListener("MSFullscreenChange", handleFullscreenChange);
+
+      if (morphcastInstance) {
+        await morphcastInstance.stop();
+      }
+
+      // Exit fullscreen
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      } else if (document.msExitFullscreen) {
+        document.msExitFullscreen();
+      }
+
+      await generateAndUploadData();
+    };
+  </script>
+</body>
+</html>
